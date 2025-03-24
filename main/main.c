@@ -30,6 +30,29 @@ QueueHandle_t xQueueDistance;
 QueueHandle_t xQueueTime;
 SemaphoreHandle_t xSemaphoreTrigger;
 
+void oled1_btn_led_init(void) {
+    gpio_init(LED_1_OLED);
+    gpio_set_dir(LED_1_OLED, GPIO_OUT);
+
+    gpio_init(LED_2_OLED);
+    gpio_set_dir(LED_2_OLED, GPIO_OUT);
+
+    gpio_init(LED_3_OLED);
+    gpio_set_dir(LED_3_OLED, GPIO_OUT);
+
+    gpio_init(BTN_1_OLED);
+    gpio_set_dir(BTN_1_OLED, GPIO_IN);
+    gpio_pull_up(BTN_1_OLED);
+
+    gpio_init(BTN_2_OLED);
+    gpio_set_dir(BTN_2_OLED, GPIO_IN);
+    gpio_pull_up(BTN_2_OLED);
+
+    gpio_init(BTN_3_OLED);
+    gpio_set_dir(BTN_3_OLED, GPIO_IN);
+    gpio_pull_up(BTN_3_OLED);
+}
+
 void pin_callback(uint gpio, uint32_t events) {
     uint32_t time;
 
