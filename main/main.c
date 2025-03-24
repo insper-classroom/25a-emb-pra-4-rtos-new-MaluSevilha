@@ -26,7 +26,6 @@ const uint PIN_ECHO = 16;
 volatile uint32_t before = 0;
 volatile bool alarm_fired = false;
 
-alarm_id_t alarm;
 QueueHandle_t xQueueDistance;
 QueueHandle_t xQueueTime;
 SemaphoreHandle_t xSemaphoreTrigger;
@@ -136,19 +135,16 @@ void oled1_demo_2(void *p) {
     }
 }
 
-int64_t alarm_callback(alarm_id_t id, void *user_data) {
-    alarm_fired = true;
-    return 0;
-}
-
 void pin_callback(uint gpio, uint32_t events) {
-    if (events == 0x4) { // stop
-        uint32_t time = to_us_since_boot(get_absolute_time());
-        xQueueSendFromISR(xQueueTime, &time, 0);
-    } else if (events == 0x8){
-        uint32_t time = to_us_since_boot(get_absolute_time());
-        xQueueSendFromISR(xQueueTime, &time, 0);
+    uint32_t time;
+
+    if (events == 0x4) { // fall edge
+        time = to_us_since_boot(get_absolute_time());
+    } else if (events == 0x8){ // rise edge
+        time = to_us_since_boot(get_absolute_time());
     }
+
+    xQueueSendFromISR(xQueueTime, &time, 0);
 }
 
 void trigger_task(void *p) {
@@ -157,11 +153,11 @@ void trigger_task(void *p) {
 
     while(true){
         gpio_put(PIN_TRIGGER, 1);
-        sleep_us(10);
+        vTaskDelay(10);
         gpio_put(PIN_TRIGGER, 0);
-        sleep_us(2);
+        vTaskDelay(2);
 
-        alarm = add_alarm_in_ms(500, alarm_callback, NULL, false);  
+        xSemaphoreGive(xSemaphoreTrigger);
     }
 }
 
@@ -169,19 +165,20 @@ void echo_task(void *p) {
     gpio_init(PIN_ECHO);
     gpio_set_dir(PIN_ECHO, GPIO_IN);
     gpio_set_irq_enabled_with_callback(PIN_ECHO, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, &pin_callback);
-    xSemaphoreGive(xSemaphoreTrigger);
+    int delay_echo = 200;
 
     while (true){
-        uint32_t now, before;
+        uint32_t stop_time, start_time;
 
-        if (xQueueReceive(xQueueTime, &now, 0) == pdTRUE && xQueueReceive(xQueueTime, &before, 0) == pdTRUE){
-            double dist = ((now - before)*0.0343)/2;
+        if (xQueueReceive(xQueueTime, &start_time, pdMS_TO_TICKS(delay_echo)) && xQueueReceive(xQueueTime, &stop_time, pdMS_TO_TICKS(delay_echo))){
+            double dist = ((stop_time - start_time)*0.0343)/2;
             xQueueSend(xQueueDistance, &dist, 0);
-            cancel_alarm(alarm);
+        } else{
+            double dist = 300;
+            xQueueSend(xQueueDistance, &dist, 0);
         }
-    }
 
-    vTaskDelay(100);
+    }
 }
 
 void oled_task(void *p) {
@@ -189,30 +186,34 @@ void oled_task(void *p) {
     ssd1306_t disp;
     gfx_init(&disp, 128, 32);
     oled1_btn_led_init();
+    int delay_oled = 10;
 
     while (true){
         double dist;
-        
-        if (xQueueReceive(xQueueDistance, &dist, 0) == pdTRUE){    
-            if (alarm_fired){
-                gfx_clear_buffer(&disp);
-                gfx_draw_string(&disp, 0, 0, 1, "Dist: FALHA");
-                gfx_show(&disp);
-                vTaskDelay(pdMS_TO_TICKS(150));
-            } else {
-                char msg[20];
 
-                xQueueReceive(xQueueDistance, &dist, 0);
-                sprintf(msg, "Dist: %.2f", dist);
+        if (xSemaphoreTake(xSemaphoreTrigger, pdMS_TO_TICKS(delay_oled))){
+            if (xQueueReceive(xQueueDistance, &dist, pdMS_TO_TICKS(delay_oled))){   
+                if (dist > 225){
+                    gfx_clear_buffer(&disp);
+                    gfx_draw_string(&disp, 0, 0, 1, "Dist: FALHA");
+                    gfx_show(&disp);
+                    vTaskDelay(pdMS_TO_TICKS(150));
+                } else {
+                    char msg[20];
+                    int progresso = (int)(dist*128/225);
 
-                gfx_clear_buffer(&disp);
-                gfx_draw_string(&disp, 0, 0, 1, msg);
-                gfx_show(&disp);
+                    xQueueReceive(xQueueDistance, &dist, 0);
+                    sprintf(msg, "Dist: %.2f cm", dist);
+    
+                    gfx_clear_buffer(&disp);
+                    gfx_draw_string(&disp, 0, 0, 1, msg);
+                    gfx_draw_line(&disp, 0, 27, progresso, 27);
 
-                vTaskDelay(pdMS_TO_TICKS(150));
+                    gfx_show(&disp);
+    
+                    vTaskDelay(pdMS_TO_TICKS(150));
+                }
             }
-        
-            xSemaphoreGive(xSemaphoreTrigger);
         }
     }
 }
@@ -220,12 +221,12 @@ void oled_task(void *p) {
 int main() {
     stdio_init_all();
 
-    xQueueDistance = xQueueCreate(32, sizeof(int));
-    xQueueTime = xQueueCreate(32, sizeof(int));
+    xQueueDistance = xQueueCreate(32, sizeof(double));
+    xQueueTime = xQueueCreate(32, sizeof(uint32_t));
     xSemaphoreTrigger = xSemaphoreCreateBinary();
 
     xTaskCreate(trigger_task, "trigger", 4095, NULL, 1, NULL);
-    xTaskCreate(echo_task, "echo", 4095, NULL, 1, NULL);
+    xTaskCreate(echo_task, "echo", 256, NULL, 1, NULL);
     xTaskCreate(oled_task, "oled", 4095, NULL, 1, NULL);
 
     vTaskStartScheduler();
